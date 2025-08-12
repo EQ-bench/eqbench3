@@ -210,10 +210,19 @@ def do_pairwise_judge(
         scenario_id,
     )
 
-    debrief_A_str = (debrief_A.replace('*', '').replace('#', '')
-                 if debrief_A else "[No Debrief Provided]")
-    debrief_B_str = (debrief_B.replace('*', '').replace('#', '')
-                 if debrief_B else "[No Debrief Provided]")
+    debrief_A_str = debrief_A if debrief_A else "[No Debrief Provided]"
+    debrief_B_str = debrief_B if debrief_B else "[No Debrief Provided]"
+    
+    # Strip thinking tags from debrief responses
+    if '<think>' in debrief_A_str and '</think>' in debrief_A_str:
+        post_think = debrief_A_str.find('</think>') + len('</think>')
+        debrief_A_str = debrief_A_str[post_think:].strip()
+    if '<think>' in debrief_B_str and '</think>' in debrief_B_str:
+        post_think = debrief_B_str.find('</think>') + len('</think>')
+        debrief_B_str = debrief_B_str[post_think:].strip()
+    
+    debrief_A_str = debrief_A_str.replace('*', '').replace('#', '')
+    debrief_B_str = debrief_B_str.replace('*', '').replace('#', '')
 
     if debrief_A and len(debrief_A_str) > DEBRIEF_CHAR_LIMIT:
         debrief_A_str = debrief_A_str[:DEBRIEF_CHAR_LIMIT] + "... [truncated]"
@@ -258,6 +267,14 @@ def do_pairwise_judge(
             raw_A = parsed_responses_A[0].get("raw", "")
         if not raw_B and parsed_responses_B:
             raw_B = parsed_responses_B[0].get("raw", "")
+
+        # Strip thinking tags before sending to judge
+        if '<think>' in raw_A and '</think>' in raw_A:
+            post_think = raw_A.find('</think>') + len('</think>')
+            raw_A = raw_A[post_think:].strip()
+        if '<think>' in raw_B and '</think>' in raw_B:
+            post_think = raw_B.find('</think>') + len('</think>')
+            raw_B = raw_B[post_think:].strip()
 
         # truncate to analysis limit
         if len(raw_A) > ANALYSIS_RESPONSE_CHAR_LIMIT:

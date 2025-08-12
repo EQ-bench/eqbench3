@@ -476,6 +476,10 @@ class ScenarioTask:
             if role_label == "User":
                 processed_content = raw_content # User content is used as is
             else: # Assistant message
+                # Strip thinking tags before sending to judge
+                if '<think>' in raw_content and '</think>' in raw_content:
+                    post_think = raw_content.find('</think>') + len('</think>')
+                    raw_content = raw_content[post_think:].strip()
                 is_no_rp = self.scenario_id in NO_RP_SCENARIO_IDS
                 is_drafting = self.scenario_id in MESSAGE_DRAFTING_SCENARIO_IDS
 
@@ -540,6 +544,10 @@ class ScenarioTask:
         debrief_text = ""
         if not is_analysis:
             debrief_text = self.debrief_response or "" # Use empty string if None somehow
+            # Strip thinking tags from debrief before sending to judge
+            if '<think>' in debrief_text and '</think>' in debrief_text:
+                post_think = debrief_text.find('</think>') + len('</think>')
+                debrief_text = debrief_text[post_think:].strip()
             if truncate_for_rubric and len(debrief_text) > DEBRIEF_CHAR_LIMIT:
                 debrief_text = debrief_text[:DEBRIEF_CHAR_LIMIT] + '...[truncated]'
 

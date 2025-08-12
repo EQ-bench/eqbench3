@@ -450,6 +450,7 @@ def run_eq_bench3(
     judge_model: Optional[str] = None, # Judge model ID string
     redo_judging: bool = False,
     truncate_for_rubric: bool = False,
+    api_config: Optional[Dict[str, Any]] = None,
 ) -> str:
     """
     Main function to run the EQBench3 benchmark.
@@ -754,7 +755,7 @@ def run_eq_bench3(
 
 
     # --- Build API clients (Remains the same) ---
-    api_clients = {"test": APIClient(model_type="test")}
+    api_clients = {"test": APIClient(model_type="test", config=api_config.get('test') if api_config else None)}
     if run_elo or run_rubric:
         api_clients["judge"] = APIClient(model_type="judge")
         judge_usage = []

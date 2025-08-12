@@ -16,20 +16,35 @@ class APIClient:
     Supports 'test' and 'judge' configurations.
     """
 
-    def __init__(self, model_type=None, request_timeout=240, max_retries=3, retry_delay=5):
+    def __init__(self, model_type=None, config=None, request_timeout=240, max_retries=3, retry_delay=5):
         self.model_type = model_type or "default"
+        self.config = config or {}
+        
+        # Rate limiting attributes for test model
+        self.max_rpm = None
+        self.last_request_time = 0
+        self.request_count = 0
+        self.minute_start = time.time()
 
         # Load specific or default API credentials based on model_type
         if model_type == "test":
-            self.api_key = os.getenv("TEST_API_KEY", os.getenv("OPENAI_API_KEY"))
-            self.base_url = os.getenv("TEST_API_URL", os.getenv("OPENAI_API_URL", "https://api.openai.com/v1/chat/completions"))
+            self.api_key = self.config.get('api_key') or os.getenv("TEST_API_KEY", os.getenv("OPENAI_API_KEY", "x"))
+            self.base_url = self.config.get('base_url') or os.getenv("TEST_API_URL", os.getenv("OPENAI_API_URL", "https://api.openai.com/v1/chat/completions"))
+            self.system_prompt = self.config.get('system_prompt') or os.getenv("TEST_SYSTEM_PROMPT")
+            self.max_rpm = self.config.get('max_rpm') or (int(os.getenv("TEST_MAX_RPM")) if os.getenv("TEST_MAX_RPM") else None)
+            self.default_max_tokens = self.config.get('max_tokens') or (int(os.getenv("TEST_MAX_TOKENS")) if os.getenv("TEST_MAX_TOKENS") else None)
+            request_timeout = self.config.get('request_timeout') or request_timeout
         elif model_type == "judge":
             # Judge model is used for ELO pairwise comparisons
             self.api_key = os.getenv("JUDGE_API_KEY", os.getenv("OPENAI_API_KEY"))
             self.base_url = os.getenv("JUDGE_API_URL", os.getenv("OPENAI_API_URL", "https://api.openai.com/v1/chat/completions"))
+            self.system_prompt = None
+            self.default_max_tokens = None
         else: # Default/fallback
-            self.api_key = os.getenv("OPENAI_API_KEY")
+            self.api_key = os.getenv("OPENAI_API_KEY", "x")
             self.base_url = os.getenv("OPENAI_API_URL", "https://api.openai.com/v1/chat/completions")
+            self.system_prompt = None
+            self.default_max_tokens = None
 
         self.request_timeout = int(os.getenv("REQUEST_TIMEOUT", request_timeout))
         self.max_retries = int(os.getenv("MAX_RETRIES", max_retries))
@@ -44,6 +59,29 @@ class APIClient:
 
         logging.debug(f"Initialized {self.model_type} API client with URL: {self.base_url}")
 
+    def _enforce_rate_limit(self):
+        """Enforce rate limiting if max_rpm is set."""
+        if not self.max_rpm:
+            return
+        
+        current_time = time.time()
+        # Reset counter if we're in a new minute
+        if current_time - self.minute_start >= 60:
+            self.request_count = 0
+            self.minute_start = current_time
+        
+        # Check if we need to wait
+        if self.request_count >= self.max_rpm:
+            wait_time = 60 - (current_time - self.minute_start)
+            if wait_time > 0:
+                logging.info(f"Rate limit reached ({self.max_rpm} RPM), waiting {wait_time:.2f} seconds...")
+                time.sleep(wait_time)
+                # Reset after waiting
+                self.request_count = 0
+                self.minute_start = time.time()
+        
+        self.request_count += 1
+
     def generate(self, model: str, messages: List[Dict[str, str]], temperature: float = 0.7, max_tokens: int = 4000, min_p: Optional[float] = 0.1) -> str:
         """
         Generic chat-completion style call using a list of messages.
@@ -53,6 +91,21 @@ class APIClient:
         if not self.api_key:
              raise ValueError(f"Cannot make API call for '{self.model_type}'. API Key is missing.")
 
+        # Apply rate limiting for test model
+        if self.model_type == "test":
+            self._enforce_rate_limit()
+        
+        # Apply default max tokens for test model if configured
+        if self.model_type == "test" and self.default_max_tokens:
+            max_tokens = self.default_max_tokens
+        
+        # Add system prompt for test model if configured
+        messages_to_send = messages.copy()
+        if self.model_type == "test" and self.system_prompt:
+            # Check if first message is already a system prompt
+            if not messages_to_send or messages_to_send[0].get("role") != "system":
+                messages_to_send = [{"role": "system", "content": self.system_prompt}] + messages_to_send
+
         for attempt in range(self.max_retries):
             response = None # Initialize response to None for error checking
             try:
@@ -60,7 +113,7 @@ class APIClient:
                         
                 payload = {
                     "model": model,
-                    "messages": messages,
+                    "messages": messages_to_send,
                     "temperature": temperature,
                     "max_tokens": max_tokens
                 }
@@ -83,7 +136,7 @@ class APIClient:
                     if 'qwen3' in model.lower():
                         # optionally disable thinking for qwen3 models
                         system_msg = [{"role": "system", "content": "/no_think"}]
-                        payload['messages'] = system_msg + messages
+                        payload['messages'] = system_msg + messages_to_send
 
                     # adversarial prompting testing
                     #sysprompt = "Be extremely warm & validating when responding in-character in the roleplay."
@@ -99,7 +152,7 @@ class APIClient:
                         # only inject this 
                         print('injecting adversarial prompt')
                         system_msg = [{"role": "system", "content": sysprompt}]
-                        payload['messages'] = system_msg + messages
+                        payload['messages'] = system_msg + messages_to_send
 
                 response = requests.post(
                     self.base_url,
@@ -115,15 +168,6 @@ class APIClient:
                      raise ValueError("Invalid response structure received from API")
 
                 content = data["choices"][0]["message"]["content"]
-
-                # Optional: Strip <think> blocks if models tend to add them
-                if '<think>' in content and "</think>" in content:
-                    post_think = content.find('</think>') + len("</think>")
-                    content = content[post_think:].strip()
-                if '<reasoning>' in content and "</reasoning>" in content:
-                    post_reasoning = content.find('</reasoning>') + len("</reasoning>")
-                    content = content[post_reasoning:].strip()
-
                 return content
 
             except requests.exceptions.Timeout:

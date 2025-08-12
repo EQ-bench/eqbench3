@@ -494,6 +494,13 @@ def main():
     parser.add_argument("--test-model", required=True, help="Identifier for the model sent to the API (e.g., 'openai/gpt-4o'). This is the API Model ID.")
     parser.add_argument("--model-name", help="Logical identifier for the model (e.g., 'gpt-4o-june-2024') used for tracking and leaderboards. Defaults to the value of --test-model if not provided.")
     parser.add_argument("--judge-model", help="Identifier for the judge model used for ELO pairwise comparisons and/or Rubric scoring.")
+    # --- Test Model API Configuration ---
+    parser.add_argument("--test-system-prompt", type=str, help="System prompt for test model API calls")
+    parser.add_argument("--test-max-rpm", type=int, help="Maximum requests per minute for test model")
+    parser.add_argument("--test-base-url", type=str, help="Base URL for test model API (e.g., http://localhost:30000/v1)")
+    parser.add_argument("--test-api-key", type=str, help="API key for test model")
+    parser.add_argument("--test-request-timeout", type=int, help="Request timeout in seconds for test model API calls")
+    parser.add_argument("--test-max-tokens", type=int, help="Maximum tokens for test model generation")
     # --- File Paths ---
     parser.add_argument("--runs-file", default=C.DEFAULT_LOCAL_RUNS_FILE, help=f"File to store local run data (default: {C.DEFAULT_LOCAL_RUNS_FILE}).")
     parser.add_argument("--elo-results-file", default=C.DEFAULT_LOCAL_ELO_FILE, help=f"File to store local ELO results and comparisons (default: {C.DEFAULT_LOCAL_ELO_FILE}).")
@@ -577,6 +584,22 @@ def main():
     signal.signal(signal.SIGINT, signal_handler)
     signal.signal(signal.SIGTERM, signal_handler)
 
+    # Process base URL - CLI accepts with or without /chat/completions
+    test_base_url = args.test_base_url
+    if test_base_url and not test_base_url.endswith('/chat/completions'):
+        test_base_url = test_base_url.rstrip('/') + '/chat/completions'
+
+    api_config = {
+        'test': {
+            'system_prompt': args.test_system_prompt,
+            'max_rpm': args.test_max_rpm,
+            'base_url': test_base_url,
+            'api_key': args.test_api_key,
+            'request_timeout': args.test_request_timeout,
+            'max_tokens': args.test_max_tokens
+        }
+    }
+
     run_key = None
     try:
         # Call run_eq_bench3 with logical name, API ID, and all file paths
@@ -584,6 +607,7 @@ def main():
             model_name=logical_model_name,
             api_model_id=api_model_id,
             judge_model=args.judge_model if (run_elo_flag or run_rubric_flag) else None,
+            api_config=api_config,
             # File Paths
             local_runs_file=args.runs_file,
             local_elo_file=args.elo_results_file,

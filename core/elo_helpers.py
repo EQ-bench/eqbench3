@@ -145,6 +145,11 @@ def format_conversation_history(
 
         # For assistant messages
         if role.lower() == "assistant":
+            # Strip thinking tags before sending to judge
+            if '<think>' in content and '</think>' in content:
+                post_think = content.find('</think>') + len('</think>')
+                content = content[post_think:].strip()
+            
             # Standard Role-Play or Message Drafting: Format parsed sections
             if parsed_responses and assistant_response_index < len(parsed_responses) and not no_rp_scenario and not is_analysis:
                 parsed = parsed_responses[assistant_response_index]

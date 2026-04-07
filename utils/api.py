@@ -136,6 +136,20 @@ class APIClient:
 
                 content = data["choices"][0]["message"]["content"]
 
+                # Reasoning models via OpenRouter may return content as None
+                # with the actual output in the reasoning field
+                if content is None:
+                    message = data["choices"][0]["message"]
+                    content = message.get("reasoning_content") or message.get("reasoning") or ""
+                    if content:
+                        logging.info(f"Model {model}: content was None, extracted response from reasoning field")
+                    else:
+                        logging.warning(
+                            f"Model {model}: API returned content=None with no reasoning fallback. "
+                            f"finish_reason={data['choices'][0].get('finish_reason', 'unknown')}. "
+                            f"Returning empty string."
+                        )
+
                 # Optional: Strip <think> blocks if models tend to add them
                 if '<think>' in content and "</think>" in content:
                     post_think = content.find('</think>') + len("</think>")

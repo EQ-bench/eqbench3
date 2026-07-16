@@ -7,7 +7,7 @@ import time
 import logging
 import re
 import json # For parsing rubric scores
-from typing import Dict, Any, List, Optional, Tuple
+from typing import Dict, Any, List, Optional, Set, Tuple
 import queue
 from utils.constants import (
     NO_RP_SCENARIO_IDS,
@@ -84,6 +84,75 @@ class ScenarioTask:
              logging.warning("Save queue is None, cannot save progress.")
         elif not run_key:
              logging.warning("Run key is None, cannot save progress.")
+
+    def recover_for_resume(
+        self,
+        repair_scenario: bool = False,
+        repair_rubric: bool = False,
+        valid_rubric_criteria: Optional[Set[str]] = None,
+    ) -> bool:
+        """
+        Restore requested interrupted or failed task phases for a targeted repair.
+
+        Completed phase outputs are deliberately preserved. This lets a resumed
+        run retry only the failed API call instead of regenerating the scenario
+        or debrief unnecessarily.
+        """
+        is_analysis = self.scenario_id in ANALYSIS_SCENARIO_IDS
+        rubric_ready_status = "scenario_completed" if is_analysis else "completed"
+        previous_status = self.status
+        recovered_status = None
+
+        has_numeric_rubric_score = isinstance(self.rubric_scores, dict) and any(
+            isinstance(score, (int, float))
+            and (valid_rubric_criteria is None or criterion in valid_rubric_criteria)
+            for criterion, score in self.rubric_scores.items()
+        )
+
+        if self.status == "running_scenario" and repair_scenario:
+            recovered_status = "initialized"
+        elif self.status == "running_debrief" and repair_scenario:
+            recovered_status = "completed" if self.debrief_response is not None else "scenario_completed"
+        elif self.status == "running_rubric_scoring" and repair_rubric:
+            recovered_status = rubric_ready_status
+        elif self.status == "error":
+            if self.rubric_run_error:
+                if repair_rubric:
+                    recovered_status = rubric_ready_status
+            elif self.debrief_run_error:
+                if repair_scenario:
+                    recovered_status = "scenario_completed"
+            elif repair_scenario:
+                # Includes explicit scenario errors and legacy errors without
+                # a phase-specific marker. run_scenario resumes from any
+                # successfully persisted turns in conversation_history.
+                recovered_status = "initialized"
+        elif self.status == "rubric_scored" and repair_rubric and not has_numeric_rubric_score:
+            recovered_status = rubric_ready_status
+
+        if recovered_status is None:
+            return False
+
+        self.status = recovered_status
+        self.error = None
+        if previous_status == "rubric_scored":
+            self.rubric_scores = None
+        if previous_status == "error":
+            if self.rubric_run_error:
+                self.rubric_run_error = None
+            elif self.debrief_run_error:
+                self.debrief_run_error = None
+            else:
+                self.scenario_run_error = None
+
+        logging.info(
+            "Recovered task %s (Iter %s) from '%s' to '%s' for resume.",
+            self.scenario_id,
+            self.iteration_index,
+            previous_status,
+            recovered_status,
+        )
+        return True
 
 
     def _parse_response(self, response: str) -> Dict[str, str]:

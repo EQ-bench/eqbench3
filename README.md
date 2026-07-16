@@ -136,6 +136,8 @@ You interact with the main script [`eqbench3.py`](./eqbench3.py). It orchestrate
 | `--no-rubric`                      | If set, skip the rubric scoring step.                                                                                                   |
 | `--ignore-canonical`               | If set, do not load or use default canonical leaderboard files. Runs will be based on local files only.                                  |
 | `--redo-rubric-judging`            | Reset tasks’ rubric status so that rubric scoring is done again.                                                                        |
+| `--repair-rubric`                  | With `--run-id`, rerun only interrupted, failed, or score-missing rubric tasks. Cannot be combined with `--redo-rubric-judging`.        |
+| `--repair-scenario`                | With `--run-id`, rerun only interrupted or failed scenario and debrief tasks. Combine with `--repair-rubric` to repair both phases.   |
 | `--reset-model`                    | Wipes all local data (runs & ELO comparisons) pertaining to `--model-name` before starting.                                             |
 
 Run `python eqbench3.py --help` for the full usage.

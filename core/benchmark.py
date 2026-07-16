@@ -449,6 +449,8 @@ def run_eq_bench3(
     run_rubric: bool = True,
     judge_model: Optional[str] = None, # Judge model ID string
     redo_judging: bool = False,
+    repair_scenarios: bool = False,
+    repair_rubric: bool = False,
     truncate_for_rubric: bool = False,
 ) -> str:
     """
@@ -770,6 +772,7 @@ def run_eq_bench3(
     run_data_for_tasks = merged_runs.get(run_key, {})
     existing_tasks_data = run_data_for_tasks.get("scenario_tasks", {})
     tasks_to_process: List[ScenarioTask] = []
+    recovered_tasks: List[ScenarioTask] = []
 
     total_tasks_expected = len(scenarios) * iterations
     logging.info(f"Preparing {total_tasks_expected} total tasks ({len(scenarios)} scenarios x {iterations} iterations)...")
@@ -810,6 +813,14 @@ def run_eq_bench3(
                         if task_obj.iteration_index != i:
                             logging.warning(f"Mismatch iteration index in loaded task data for {scenario_id} (expected {i}, got {task_obj.iteration_index}). Resetting.")
                             task_obj.iteration_index = i
+                        if (repair_scenarios or repair_rubric) and task_obj.recover_for_resume(
+                            repair_scenario=repair_scenarios,
+                            repair_rubric=repair_rubric,
+                            valid_rubric_criteria=set(
+                                analysis_rubric_criteria if is_analysis else standard_rubric_criteria
+                            ),
+                        ):
+                            recovered_tasks.append(task_obj)
                         logging.debug(f"Resuming task: Scenario {scenario_id}, Iteration {i}, Status: {task_obj.status}")
                     except Exception as e:
                         logging.error(f"Failed to load task from dict for scenario={scenario_id}, iter={i}: {e}. Creating new task.", exc_info=True)
@@ -848,13 +859,32 @@ def run_eq_bench3(
     )
     save_thread.start()
     logging.info("Save worker thread started.")
+    for task in recovered_tasks:
+        task._save_progress(save_queue, run_key)
+    if recovered_tasks:
+        logging.info(
+            "Persisted recovery state for %s interrupted or failed task(s).",
+            len(recovered_tasks),
+        )
+    recovered_task_keys = {
+        (task.iteration_index, task.scenario_id)
+        for task in recovered_tasks
+    }
 
     # --- Execute Tasks (Remains largely the same, save worker handles target file) ---
     tasks_completed_this_run = 0 # Tracks tasks fully completed (incl. rubric if enabled)
 
     try:
         # 1. Run scenario steps
-        tasks_needing_scenario = [t for t in tasks_to_process if t.status in ["initialized", "error"]]
+        tasks_needing_scenario = []
+        if repair_scenarios or repair_rubric:
+            tasks_needing_scenario = [
+                t for t in tasks_to_process
+                if (t.iteration_index, t.scenario_id) in recovered_task_keys
+                and t.status == "initialized"
+            ]
+        else:
+            tasks_needing_scenario = [t for t in tasks_to_process if t.status in ["initialized", "error"]]
         if tasks_needing_scenario:
             logging.info(f"Running scenario simulation for {len(tasks_needing_scenario)} tasks...")
             with ThreadPoolExecutor(max_workers=num_threads, thread_name_prefix="ScenarioRun") as executor:
@@ -879,7 +909,19 @@ def run_eq_bench3(
 
 
         # 2. Run debrief steps (Skip for Analysis tasks)
-        tasks_needing_debrief = [t for t in tasks_to_process if t.status == "scenario_completed" and t.scenario_id not in C.ANALYSIS_SCENARIO_IDS]
+        tasks_needing_debrief = []
+        if repair_scenarios or repair_rubric:
+            tasks_needing_debrief = [
+                t for t in tasks_to_process
+                if (t.iteration_index, t.scenario_id) in recovered_task_keys
+                and t.status == "scenario_completed"
+                and t.scenario_id not in C.ANALYSIS_SCENARIO_IDS
+            ]
+        else:
+            tasks_needing_debrief = [
+                t for t in tasks_to_process
+                if t.status == "scenario_completed" and t.scenario_id not in C.ANALYSIS_SCENARIO_IDS
+            ]
         if tasks_needing_debrief:
             logging.info(f"Running debrief for {len(tasks_needing_debrief)} non-analysis tasks...")
             with ThreadPoolExecutor(max_workers=num_threads, thread_name_prefix="DebriefRun") as executor:
@@ -906,17 +948,41 @@ def run_eq_bench3(
         if run_rubric:
             # Standard/Drafting tasks need rubric if status is 'completed'
             # Analysis tasks need rubric if status is 'scenario_completed'
-            tasks_needing_rubric = [
+            rubric_ready_tasks = [
                 t for t in tasks_to_process
                 if (
+                    not (repair_scenarios or repair_rubric)
+                    or redo_judging
+                    or (
+                        repair_rubric
+                        and (t.iteration_index, t.scenario_id) in recovered_task_keys
+                    )
+                ) and (
                     (
                         t.scenario_id in C.ANALYSIS_SCENARIO_IDS and t.status == "scenario_completed"
                     ) or (
                         t.scenario_id not in C.ANALYSIS_SCENARIO_IDS and t.status == "completed"
                     )
                 )
-                and _task_has_all_expected_responses(t)          # <<< new guard
             ]
+            tasks_needing_rubric = [
+                t for t in rubric_ready_tasks
+                if _task_has_all_expected_responses(t)
+            ]
+            incomplete_rubric_tasks = [
+                t for t in rubric_ready_tasks
+                if not _task_has_all_expected_responses(t)
+            ]
+            for task in incomplete_rubric_tasks:
+                task.status = "error"
+                task.error = "Rubric Scoring Error: Task output incomplete; rubric scoring skipped."
+                task.rubric_run_error = "Task output incomplete"
+                task._save_progress(save_queue, run_key)
+                logging.warning(
+                    "Skipping rubric scoring for incomplete task %s (Iter %s).",
+                    task.scenario_id,
+                    task.iteration_index,
+                )
 
             if tasks_needing_rubric:
                 logging.info(f"Running rubric scoring for {len(tasks_needing_rubric)} tasks using judge model '{judge_model}' (Truncation: {truncate_for_rubric})...")

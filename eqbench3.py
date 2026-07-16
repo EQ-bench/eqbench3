@@ -606,6 +606,18 @@ def main():
     parser.add_argument("--redo-rubric-judging", action="store_true", default=False,
                         help="If set, tasks in the local runs file that have completed rubric scoring will be reset so the rubric step is re-run.")
     parser.add_argument(
+        "--repair-rubric",
+        action="store_true",
+        default=False,
+        help="Repair only interrupted, failed, or score-missing rubric tasks in the resumed run.",
+    )
+    parser.add_argument(
+        "--repair-scenario",
+        action="store_true",
+        default=False,
+        help="Repair only interrupted or failed scenario and debrief tasks in the resumed run.",
+    )
+    parser.add_argument(
         "--reset-model",
         action="store_true",
         default=False,
@@ -675,6 +687,13 @@ def main():
     run_elo_flag = not args.no_elo
     run_rubric_flag = not args.no_rubric
 
+    if (args.repair_rubric or args.repair_scenario) and not args.run_id:
+        parser.error("--repair-rubric and --repair-scenario require --run-id to target an existing run.")
+    if args.repair_rubric and args.no_rubric:
+        parser.error("--repair-rubric cannot be used with --no-rubric.")
+    if args.repair_rubric and args.redo_rubric_judging:
+        parser.error("--repair-rubric and --redo-rubric-judging are mutually exclusive.")
+
     if (run_elo_flag or run_rubric_flag) and not args.judge_model:
         parser.error("--judge-model is required unless both --no-elo and --no-rubric are specified.")
         sys.exit(1)
@@ -704,6 +723,8 @@ def main():
             run_elo=run_elo_flag,
             run_rubric=run_rubric_flag,
             redo_judging=args.redo_rubric_judging,
+            repair_scenarios=args.repair_scenario,
+            repair_rubric=args.repair_rubric,
             truncate_for_rubric=False, # Hardcoded for now, could be arg
         )
 
